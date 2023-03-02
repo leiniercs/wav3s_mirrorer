@@ -1,5 +1,5 @@
 const CreateMirrorTypedDataRequest = `
-	mutation createMirrorTypedData($request: CreateMirrorRequest!) {
+	mutation CreateMirrorTypedData($request: CreateMirrorRequest!) {
 		createMirrorTypedData(request: $request) {
 			id
 			expiresAt

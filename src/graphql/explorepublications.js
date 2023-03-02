@@ -8,13 +8,18 @@ const ExplorePublicationsRequest = `
 				}
 			}
 			pageInfo {
-				...CommonPaginatedResultInfoFields
+				prev
+				next
+				totalCount
 			}
 		}
 	}
 
 	fragment PostFields on Post {
 		id
+		profile {
+			isFollowedByMe
+		}
 		metadata {
 			attributes {
 				displayType

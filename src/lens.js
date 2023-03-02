@@ -1,10 +1,9 @@
 const { GraphQL } = require('./graphql');
 const { HDWallet } = require('./wallet');
-const { Contract, parseUnits } = require('ethers');
+const { Contract } = require('ethers');
 const omitDeep = require('omit-deep');
 const fs = require('node:fs');
 const path = require('node:path');
-const util = require('node:util')
 
 
 class Lens {
@@ -41,7 +40,6 @@ class Lens {
 							this._graphQL.authenticate(walletAddress, value)
 								.then((authenticate) => {
 									this.updateTokens(authenticate.accessToken, authenticate.refreshToken);
-									this._updateTokensTimer = setInterval(this.refreshTokens, 28 * 60 * 1000);
 									this._loggedIn = true;
 
 									resolve();
@@ -78,15 +76,18 @@ class Lens {
 	}
 
 	refreshTokens() {
-		if (this._loggedIn === true) {
+		if (this._loggedIn === false) { throw new Error('Not logged in.'); }
+
+		return new Promise((resolve, reject) => {
 			this._graphQL.refreshAccessToken(
 				this._refreshToken
 			).then((refresh) => {
 				this.updateTokens(refresh.accessToken, refresh.refreshToken);
+				resolve();
 			}).catch((reason) => {
 				reject(`[Lens::GraphQL::RefreshTokens] Error: ${reason}`);
 			});
-		}
+		});
 	}
 
 	getDefaultProfileId() {
@@ -99,6 +100,60 @@ class Lens {
 		if (this._loggedIn === false) { throw new Error('Not logged in.'); }
 
 		return this._graphQL.getLatestWav3sCampaigns();
+	}
+
+	follow(defaultProfileId, profileIds) {
+		if (this._loggedIn === false) { throw new Error('Not logged in.'); }
+
+		return new Promise((resolve, reject) => {
+			this._graphQL.createFollowTypedData(
+				defaultProfileId,
+				profileIds
+			).then((followTypedData) => {
+				this._wallet.signTypedData(
+					omitDeep(followTypedData.typedData.domain, [ '__typename' ]),
+					omitDeep(followTypedData.typedData.types, [ '__typename' ]),
+					omitDeep(followTypedData.typedData.value, [ '__typename' ])
+				).then(async (signedTypedData) => {
+					const { v, r, s } = this._wallet.splitSignature(signedTypedData);
+					const lensHub = new Contract(process.env.LENS_CONTRACT_HUB, this._abiLensHub, this._wallet.getWallet());
+					const feeData = await this._wallet._provider.getFeeData();
+					const maxFeePerGas = feeData.maxFeePerGas * BigInt(110) / BigInt(100);
+			  
+					lensHub.followWithSig({
+						follower: this._wallet.getWalletAddress(),
+						profileIds: followTypedData.typedData.value.profileIds,
+						datas: followTypedData.typedData.value.datas,
+						referenceModuleData: followTypedData.typedData.value.referenceModuleData,
+						referenceModule: followTypedData.typedData.value.referenceModule,
+						referenceModuleInitData: followTypedData.typedData.value.referenceModuleInitData,
+						sig: {
+							v, r, s,
+							deadline: followTypedData.typedData.value.deadline
+						}
+					}, { maxFeePerGas: maxFeePerGas, maxPriorityFeePerGas: BigInt(50e9) }).then((tx) => {
+						resolve(tx);
+/*
+						tx.wait(
+							1
+						).then((receipt) => {
+							resolve(receipt);
+						}).catch((reason) => {
+							reject(`[Lens::Contract::followWithSig::TX] Error: ${reason}`);
+						});
+*/
+					}).catch((reason) => {
+						reject(`[Lens::Contract::followWithSig] Error: ${reason}`);
+					});
+				})
+				.catch((reason) => {
+					reject(`[Lens::Wallet::SignTypedData] Error: ${reason}`);
+				});
+			})
+			.catch((reason) => {
+				reject(`[Lens::GraphQL::CreateFollowTypedData] Error: ${reason}`);
+			});
+		});
 	}
 
 	mirror(profileId, publicationId) {
@@ -116,7 +171,9 @@ class Lens {
 				).then(async (signedTypedData) => {
 					const { v, r, s } = this._wallet.splitSignature(signedTypedData);
 					const lensHub = new Contract(process.env.LENS_CONTRACT_HUB, this._abiLensHub, this._wallet.getWallet());
-
+					const feeData = await this._wallet._provider.getFeeData();
+					const maxFeePerGas = feeData.maxFeePerGas * BigInt(110) / BigInt(100);
+			  
 					lensHub.mirrorWithSig({
 						profileId: mirrorTypedData.typedData.value.profileId,
 						profileIdPointed: mirrorTypedData.typedData.value.profileIdPointed,
@@ -128,10 +185,10 @@ class Lens {
 							v, r, s,
 							deadline: mirrorTypedData.typedData.value.deadline
 						}
-					}, { gasLimit: 400000 }).then((tx) => {
-						console.log(util.inspect(tx, false, 5, true));
-						resolve(true);
-						return;
+					}, { maxFeePerGas: maxFeePerGas, maxPriorityFeePerGas: BigInt(50e9) }).then((tx) => {
+						this._graphQL.mirror(publicationId);
+						resolve(tx);
+/*
 						tx.wait(
 							1
 						).then((receipt) => {
@@ -139,6 +196,7 @@ class Lens {
 						}).catch((reason) => {
 							reject(`[Lens::Contract::mirrorWithSig::TX] Error: ${reason}`);
 						});
+*/
 					}).catch((reason) => {
 						reject(`[Lens::Contract::mirrorWithSig] Error: ${reason}`);
 					});

@@ -12,6 +12,7 @@
 	"dependencies": {
 		"omit-deep": "latest",
 		"dotenv": "latest",
+		"sqlite3": "latest",
 		"ethers": "latest",
 		"@apollo/client": "latest",
 		"graphql": "^15.0.0"

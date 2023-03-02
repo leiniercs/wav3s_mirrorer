@@ -1,10 +1,13 @@
 const { ApolloClient, from, InMemoryCache, ApolloLink, HttpLink } = require('@apollo/client/core');
 const gql = require('graphql-tag');
+const { SQLiteDatabase } = require('./sqlite');
 const { ChallengeRequest } = require('./graphql/challenge');
 const { AuthenticateRequest } = require('./graphql/authenticate');
 const { RefreshRequest } = require('./graphql/refresh');
 const { DefaultProfileRequest } = require('./graphql/defaultprofile');
+const { ProfileRequest } = require('./graphql/profile');
 const { ExplorePublicationsRequest } = require('./graphql/explorepublications');
+const { CreateFollowTypedData } = require('./graphql/follow');
 const { CreateMirrorTypedDataRequest } = require('./graphql/mirror');
 
 
@@ -19,6 +22,7 @@ class GraphQL {
 				fetchPolicy: 'no-cache'
 			}
 		};
+		this._database = new SQLiteDatabase();
 		this._cache = new InMemoryCache();
 		this._authLink = new ApolloLink((operation, forward) => {
 			if (this._accessToken) {
@@ -69,9 +73,7 @@ class GraphQL {
 				}
 			).then((value) => {
 				resolve(value.data.challenge);
-			}).catch((reason) => {
-				reject(reason);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -88,9 +90,7 @@ class GraphQL {
 			).then((value) => {
 				this._accessToken = value.data.authenticate.accessToken;
 				resolve(value.data.authenticate);
-			}).catch((reason) => {
-				reject(reason);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -106,9 +106,7 @@ class GraphQL {
 			).then((value) => {
 				this._accessToken = value.data.refresh.accessToken;
 				resolve(value.data.refresh);
-			}).catch((reason) => {
-				reject(reason);
-			});
+			}).catch(reject);
 		});
 	}
 
@@ -123,9 +121,22 @@ class GraphQL {
 				}
 			).then((value) => {
 				resolve(value.data.defaultProfile);
-			}).catch((reason) => {
-				reject(reason);
-			});
+			}).catch(reject);
+		});
+	}
+
+	getProfileById(id) {
+		return new Promise((resolve, reject) => {
+			this.query(
+				ProfileRequest,
+				{
+					request: {
+						profileId: id
+					}
+				}
+			).then((value) => {
+				resolve(value.data.profile);
+			}).catch(reject);
 		});
 	}
 
@@ -138,14 +149,77 @@ class GraphQL {
 						sortCriteria: 'LATEST',
 						publicationTypes: [ 'POST' ],
 						sources: [ 'wav3s' ],
-						limit: 10
+						limit: 50
 					}
 				}
-			).then((value) => {
-				resolve(value.data.explorePublications.items);
-			}).catch((reason) => {
-				reject(reason);
-			});
+			).then(async (value) => {
+				const publications = [];
+
+				for (let publication of value.data.explorePublications.items) {
+					if (await this._database.isPublicationIndexed(publication.id) === false) {
+						let rewardCurrency = 0.0;
+						let rewardAmount = '';
+
+						for (let attribute of publication.metadata.attributes) {
+							switch (attribute.traitType) {
+								case 'currency':
+									rewardCurrency = attribute.value;
+									break;
+								case 'mirrorReward':
+									rewardAmount = Number(attribute.value);
+									break;
+								default:
+									break;
+							}
+						}
+
+						this._database.indexPublication(publication.id, rewardCurrency, rewardAmount);
+						publications.push(publication);
+					}
+				}
+
+				resolve(publications);
+			}).catch(reject);
+		});
+	}
+
+	createFollowTypedData(defaultProfileId, profileIds) {
+		return new Promise(async (resolve, reject) => {
+			const followData = [];
+			
+			for (let profileId of profileIds) {
+				const profileData = await this.getProfileById(profileId);
+
+				if (!profileData.followModule) {
+					followData.push({
+						profile: profileId
+					});
+				} else if (profileData.type === 'ProfileFollowModule') {
+					followData.push({
+						profile: profileId,
+						followModule: {
+							profileFollowModule: {
+								profileId: defaultProfileId
+							}  
+						}
+					});
+				}
+			}
+
+			if (followData.length === 0) {
+				reject('No profiles to follow');
+			} else {
+				this.mutate(
+					CreateFollowTypedData,
+					{
+						request: {
+							follow: followData
+						}
+					}
+				).then((value) => {
+					resolve(value.data.createFollowTypedData);
+				}).catch(reject);
+			}
 		});
 	}
 
@@ -164,10 +238,12 @@ class GraphQL {
 				}
 			).then((value) => {
 				resolve(value.data.createMirrorTypedData);
-			}).catch((reason) => {
-				reject(reason);
-			});
+			}).catch(reject);
 		});
+	}
+
+	mirror(publicationId) {
+		this._database.mirrorPublication(publicationId);
 	}
 }
 
